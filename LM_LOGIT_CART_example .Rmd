@@ -1,0 +1,170 @@
+---
+title: "ECON 4460 Assignment"
+author: "Vai Suliafu u0742607"
+date: "November 9, 2016"
+output: pdf_document
+---
+
+PRELIMINARIES
+```{r}
+# Loading in the prison data set
+cd <- read.csv(file = "crime506.csv", header = TRUE)
+
+# Loading the required packages
+# install.packages("corrplot")
+# install.packages("BMA")
+# install.packages("tree")
+# install.packages("party")
+library(BMA)
+library(corrplot)
+library(lmtest)
+library(leaps)
+library(car)
+library(sandwich)
+library(tree)
+library(party)
+library(leaps)
+library(corrplot)
+```
+
+Let's first examine the structure of the crime data (cd) so that we can create our test data and our sample data
+
+```{r}
+str(cd)
+```
+
+We note that there are 506 observations and 44 variables. I will do a standard 80/20 split for training data and testing data. A simple calculation shows that 80% of a 506 sample is 405 observations, so my training data will the first 405 observations and my test data will be the remaining 101 observations.
+
+```{r}
+train_cd <- cd[1:405,]
+test_cd <- cd[405:506,]
+```
+
+I will first look at linear models. I could "go into the kitchen" and cook up all kinds of models using any theories I might have, but this would be tedious. I prefer to take an exploratory approach and let the machine tell me what the best predictive linear model is. Therefore, I shall use the best subsets approach from the leap package to determine the best predictive linear model. 
+
+```{r}
+# using "anyreturn" as my target, I will allow up to 10 predictor variables, and take the singe best models with 10 predictor variables
+
+## choosing a max of 10 predictor variables is somewhat arbitrary. I would like consider all the variables, but this is too large of a calculation for my computer to handle. 
+
+sub1 <- regsubsets(anyreturn ~ ., data = train_cd, nbest = 1, nvmax = 10)
+
+# Viewing a summary of the best subsets 
+summary(sub1)
+
+# Making a visualization to compare the adjusted R-Squares of each suggested model
+plot(sub1, scale = "adjr2", main = "By Adjusted R-Squared, sub1")
+
+# Now building an acutal linear model using the suggested predictor variables
+fit1 <- lm(anyreturn ~ newcrime + techviol + male + priorinc + drug + othercrime + sex + jtconstr + chsupdum + owncar, data = train_cd)
+
+# Viewing the summary of this linear model that was built by the suggestions of the best subset method
+summary(fit1)
+```              
+
+Now, the adjusted R-squared of this linear model is 1, which suggest that it can perfectly predict the possibility that a previous inmate will return to prison. This 'perfection' of the model sounds extremely suspicious, so of course we have to test it on our training data. 
+
+```{r}
+# Generating predictions using the test data
+pred_lm <- predict(fit1, newdata = test_cd)
+
+# Adding this vector of predictions to the test dataset
+test_cd$pred_lm <- pred_lm
+
+# Since linear models will give you an exact prediction, it makes sense to use the function floor(), so that we have binary predictions. 
+## Note that I visually inspected the data set to ensure that there were no values such as 0.99 that would be 'incorrectly' rounded by the floor function. 
+
+test_cd$pred_lm <- floor(test_cd$pred_lm)
+
+# Comparing the predictions of anyreturn to the actual values of any return
+mean(test_cd$anyreturn - test_cd$pred_lm)
+```
+
+This shows that there were zero misclassification errors from the linear model suggested by best subsets. However, I also conclude that I am unsure about the meaning of some of the predictor variables. It could be that some, or even many of the predictor variables used were proxies for anyreturn. In other words, it is possible that I was basically using anyreturn to predict anyreturn. This stresses the importance of knowing the context behind the data before making any recommendations of models. 
+
+If I assume that none of the predictor variables were proxies for anyreturn, I can conclude that a linear model is extremely powerful in predicting anyreturn. If I cannot say that the predictor variables are not proxies for anyreturn, I really can't reach only conclusion about this model. 
+
+Now, lets look at the predictive power of a logit model. 
+
+```{r}
+# I would like to use the same predictor variables as I used for the linear model
+logit1 <- glm(anyreturn ~  newcrime + techviol + male + priorinc + drug + othercrime + sex + jtconstr + chsupdum + owncar, data = train_cd, family = "binomial")
+
+# Viewing a summary of this logit model
+summary(logit1)
+
+# Now we have to use this model to generate some actual predictions
+predict_logit <- predict(logit1, newdata = test_cd)
+
+# Now I have to generate some simplified predictions
+## ie, I have to make the predictions binary 
+### I have decided that I will send values less than 0 to 0, and values greater than or equal to 0 to 1
+predict_logit_simple = ifelse(predict_logit < 0, 0, 1)
+
+# making a cross tab of the logit model predictions and actual return to prison
+print(table(predict_logit_simple, test_cd$anyreturn))
+```
+
+As expected, the logistic model predicted return to prison with 100% accuracy. That being said, I reach the same conclusion that I did for the linear model. I am extremely skeptical about these results. I think there is either overfitting or I am using a proxy for anyreturn as a predictor.
+
+Now, lets look at the cart/tree model. 
+
+```{r}
+tree1 <- tree(as.factor(anyreturn) ~ ., data = train_cd)
+
+# viewing a summary of the tree model
+summary(tree1)
+```
+
+Alas, the tree model has revealed the 'issues' with our previous models. It looks as if they were all relying solely on the predictor variables techviol and newcrime. The data shows that their return to prison is dependent on the classifcation of their techviolation. If it is classified as a new crime, they return to prison. If it is not classified as a new crime, they do not return to prison (from this techviol). 
+
+In context, this is not really helpful. Policymakers would likely be interested in the probability that previous inmates will return to prison BEFORE they commit a new crime. Sure, you could use this study to re-examine what kind of activities are classified as techviols, but the political feasibility of redefining these terms seems improbably. Instead, we should reevaluate our previous models and ensure that the predictor variables techviol and newcrime are not used in the model, so that the results of the study can suggest more feasible actions. 
+
+For example, a tree model without techviol and anycrime is less accurate of course, but probably more useful:
+
+```{r}
+tree2 <- tree(as.factor(anyreturn) ~ .-techviol - newcrime, data = train_cd)
+
+summary(tree2)
+
+predcrime <- predict(tree2, newdata = test_cd)
+
+predout <- cbind(predcrime, test_cd$anyreturn)
+
+head(predout)
+
+plot(tree2)
+text(tree2)
+```
+
+Anyway, let us move on to Bayesian Model Averaging. As a starting point, it would be wise to look at the correlations between all variables in the dataset. 
+
+```{r}
+c_cors <- cor(cd)
+corrplot(c_cors, method = "ellipse", order = "alphabet")
+```
+
+Now let's do our bayesian model averaging. 
+
+```{r}
+X <- cd[,1]
+Y <- cd[,2:44]
+
+cdbma <- bicreg(Y,X, OR = 250)
+
+summary(cdbma)
+```
+
+Now let's do our bayesian model averaging, excluding techviol and newcrime. 
+
+```{r}
+Y2 <- cd[,4:44]
+
+cdbma2 <- bicreg(Y2, X, OR = 250)
+
+summary(cdbma2)
+```
+
+As expected, the linear models without techviol and newcrime are significantly less powerful than the tree model without techviol and newcrime. 
+
+Our final conclusion is that it's imperative to understand the context of the data before any models can be built and any conclusions can be reached. Furthermore, the data is really the sole determinant of which model will work best, so it is wise to familiarize yourself with the various modeling techniques. Our 'fair' tree model was about 75% accurate, and our bayesian model averaging suggests that the best model is only about 10% accurate. 
